@@ -146,6 +146,12 @@ func New(conf Config, eb *appevent.Broadcaster) (*Network, error) {
 			SK:        conf.SecKey,
 			Table:     pktable.NewTable(conf.NetworkConfigs.STCP.PKTable),
 			LocalAddr: conf.NetworkConfigs.STCP.LocalAddr,
+			BeforeDialCallback: func(network, addr string) error {
+				data := appevent.TCPDialData{RemoteNet: network, RemoteAddr: addr}
+				event := appevent.NewEvent(appevent.TCPDial, data)
+				_ = eb.Broadcast(context.Background(), event) //nolint:errcheck
+				return nil
+			},
 		}
 		clients.Direct[tptypes.STCP] = directtp.NewClient(conf)
 	}
@@ -156,6 +162,12 @@ func New(conf Config, eb *appevent.Broadcaster) (*Network, error) {
 			PK:              conf.PubKey,
 			SK:              conf.SecKey,
 			AddressResolver: conf.ARClient,
+			BeforeDialCallback: func(network, addr string) error {
+				data := appevent.TCPDialData{RemoteNet: network, RemoteAddr: addr}
+				event := appevent.NewEvent(appevent.TCPDial, data)
+				_ = eb.Broadcast(context.Background(), event) //nolint:errcheck
+				return nil
+			},
 		}
 
 		clients.Direct[tptypes.STCPR] = directtp.NewClient(stcprConf)
@@ -192,6 +204,11 @@ func NewRaw(conf Config, clients NetworkClients) *Network {
 	}
 
 	return n
+}
+
+// Conf gets network configuration.
+func (n *Network) Conf() Config {
+	return n.conf
 }
 
 // Init initiates server connections.
@@ -299,13 +316,19 @@ func (n *Network) Close() error {
 		}()
 	}
 
+	var directErrorsMu sync.Mutex
 	directErrors := make(map[string]error)
 
 	for k, v := range n.clients.Direct {
 		if v != nil {
 			wg.Add(1)
 			go func() {
-				directErrors[k] = v.Close()
+				err := v.Close()
+
+				directErrorsMu.Lock()
+				directErrors[k] = err
+				directErrorsMu.Unlock()
+
 				wg.Done()
 			}()
 		}
